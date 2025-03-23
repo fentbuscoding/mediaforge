@@ -2,7 +2,6 @@
 The entrypoint of MediaForge, containing the majority of the discord API interactions.
 """
 import asyncio
-# standard libs
 import os
 import sqlite3
 import sys
@@ -12,12 +11,10 @@ sys.path.insert(0, os.getcwd())
 from utils import tempfiles
 
 try:
-    # pip libs
     import aiofiles
     import aiohttp
     from aiohttp import client_exceptions as aiohttp_client_exceptions
     import aiosqlite
-    import discordlists
     import docstring_parser
     import emojis
     import humanize
@@ -28,7 +25,6 @@ try:
     import yt_dlp as youtube_dl
     import glob
     from discord.ext import commands, tasks
-    # make it so processes can raise errors and that works fine
     from tblib import pickling_support
 
     pickling_support.install()
@@ -37,14 +33,12 @@ except ModuleNotFoundError as e:
     sys.exit("MediaForge was unable to import the required libraries and files. Did you follow the self-hosting guide "
              "on the GitHub? https://github.com/machineonamission/mediaforge#to-self-host")
 
-# project files
 import core.database
 from core import heartbeat
 from utils.common import *
 from core.clogs import logger
 import config
 
-# cogs
 from cog.botevents import BotEventsCog
 from cog.botlist import DiscordListsPost
 from cog.commandchecks import CommandChecksCog
@@ -63,25 +57,15 @@ if not hasattr(config, "bot_token") or config.bot_token == "EXAMPLE_TOKEN":
     sys.exit("The bot token could not be found or hasn't been properly set. Be sure to follow the self-hosting "
              "guide on GitHub. https://github.com/machineonamission/mediaforge#to-self-host")
 
-# make copy of .reply() function
 discord.Message.orig_reply = discord.Message.reply
 
-
 async def safe_reply(self: discord.Message, *args, **kwargs) -> discord.Message:
-    # replies to original message if it exists, just sends in channel if it doesnt
     try:
-        # retrieve this message, will throw NotFound if its not found and go to the fallback option.
-        # turns out trying to send a message will close any file objects which causes problems
         await self.channel.fetch_message(self.id)
-        # reference copy of .reply() since this func will override .reply()
         return await self.orig_reply(*args, **kwargs)
-    # for some reason doesnt throw specific error
-    # if its unrelated httpexception itll just throw again and fall to the
-    # error handler hopefully
     except (discord.errors.NotFound, discord.errors.HTTPException) as e:
         logger.debug(f"abandoning reply to {self.id} due to {get_full_class_name(e)}, "
                      f"sending message in {self.channel.id}.")
-        # mention author
         author = self.author.mention
         if len(args):
             content = author + (args[0] or "")[:2000 - len(author)]
@@ -90,37 +74,28 @@ async def safe_reply(self: discord.Message, *args, **kwargs) -> discord.Message:
         return await self.channel.send(content, **kwargs, allowed_mentions=discord.AllowedMentions(
             everyone=False, users=True, roles=False, replied_user=True))
 
-
-# override .reply()
 discord.Message.reply = safe_reply
 
-
-def downloadttsvoices():
-    # other misc init code (really need to organize this :p)
+async def downloadttsvoices():
     if sys.platform != 'win32':
         ttspath = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tts")
         femalevoice = os.path.join(ttspath, "mycroft_voice_4.0.flitevox")
         malevoice = os.path.join(ttspath, "cmu_us_slt.flitevox")
         if not os.path.isfile(malevoice):
             logger.log(25, "Downloading male TTS voice...")
-            download_sync("https://github.com/MycroftAI/mimic1/raw/development/voices/mycroft_voice_4.0.flitevox",
+            await download_async("https://github.com/MycroftAI/mimic1/raw/development/voices/mycroft_voice_4.0.flitevox",
                           malevoice)
             logger.log(35, "Male TTS voice downloaded!")
         if not os.path.isfile(femalevoice):
             logger.log(25, "Downloading female TTS voice...")
-            download_sync("https://github.com/MycroftAI/mimic1/raw/development/voices/cmu_us_slt.flitevox",
+            await download_async("https://github.com/MycroftAI/mimic1/raw/development/voices/cmu_us_slt.flitevox",
                           femalevoice)
             logger.log(35, "Female TTS voice downloaded!")
-        # chmod +x (mark executable)
         mimicpath = os.path.join(ttspath, "mimic")
         os.chmod(mimicpath, os.stat(mimicpath).st_mode | 0o111)
 
-
 def initdbsync():
-    # create table if it doesnt exist
-    # this isnt done with aiosqlite because its easier to just not do things asyncly during startup.
     syncdb = sqlite3.connect(config.db_filename)
-    # setup db tables
     with syncdb:
         cur = syncdb.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='guild_prefixes'")
         if not cur.fetchall():
@@ -133,13 +108,11 @@ def initdbsync():
             syncdb.execute("create table bans ( user int not null constraint bans_pk primary key, banreason text );  ")
     syncdb.close()
 
-
-def init():
+async def init():
     initdbsync()
-    downloadttsvoices()
+    await downloadttsvoices()
     heartbeat.init()
     tempfiles.init()
-
 
 class MyBot(commands.AutoShardedBot):
     async def setup_hook(self):
@@ -161,23 +134,19 @@ class MyBot(commands.AutoShardedBot):
             bot.add_cog(ErrorHandlerCog(bot)),
             bot.add_cog(CommandChecksCog(bot)),
             bot.add_cog(BotEventsCog(bot)),
-
         )
-
 
 if __name__ == "__main__":
     logger.log(25, "Hello World!")
     logger.info(f"discord.py {discord.__version__}")
-    init()
+    asyncio.run(init())
     if hasattr(config, "shard_count") and config.shard_count is not None:
         shard_count = config.shard_count
     else:
         shard_count = None
-    # init intents
     intents = discord.Intents.all()
     intents.presences = False
     intents.members = False
-    # init bot
     bot = MyBot(command_prefix=prefix_function,
                 help_command=None,
                 case_insensitive=True,
@@ -187,10 +156,5 @@ if __name__ == "__main__":
                 intents=intents)
 
     logger.debug("running bot")
-    # weird windows bug
-    # if sys.platform == "win32":
-    #     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    # run bot
     bot.run(config.bot_token, log_handler=None)
-    # close db
     asyncio.run(core.database.close_database())

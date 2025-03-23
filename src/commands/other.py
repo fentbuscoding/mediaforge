@@ -85,7 +85,6 @@ class Other(commands.Cog, name="Other"):
         await process(ctx, utils.discordmisc.add_emoji, [[GIF, IMAGE]], ctx.guild, name, expectimage=False,
                       resize=False, slashfiles=media)
 
-    # TODO: fix?
     @commands.guild_only()
     @commands.has_guild_permissions(manage_emojis=True)
     @commands.bot_has_guild_permissions(manage_emojis=True)

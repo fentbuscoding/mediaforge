@@ -4,59 +4,51 @@ from processing.mediatype import VIDEO, AUDIO, IMAGE, GIF
 from processing.run_command import run_command
 from utils.tempfiles import reserve_tempfile
 
+# Add common FFmpeg flags as constants
+COMMON_FLAGS = ["-hide_banner", "-y"]
+VIDEO_FLAGS = ["-movflags", "+faststart", "-max_muxing_queue_size", "9999"]
+AUDIO_FLAGS = ["-c:a", "aac", "-q:a", "2"] 
+H264_FLAGS = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast"]
 
 async def videotogif(video):
     if (await get_vcodec(video))["codec_name"] == "gif":
         return video
+        
     outname = reserve_tempfile("gif")
     fps = await get_frame_rate(video)
     lc = await video.gif_loop_count()
-    await run_command("ffmpeg", "-i", video,
-                      # prevent partial frames, makes filesize worse but fixes issues with transparency
-                      "-gifflags", "-transdiff",
-                      "-loop", str(lc),
-                      "-vf",
-                      # cap fps because gifs are wackyyyyyy
-                      # TODO: https://superuser.com/q/1854904/1001487
-                      f"{'fps=fps=50,' if fps > 50 else ''}"
-                      "split[s0][s1];"
-                      "[s0]"
-                      # "What happens is that the color values are rounded to the nearest value that has a remainder of 4 when divided by 8."
-                      # https://glq.pages.dev/posts/high_quality_gifs/
-                      # this is only in the image preview, the effect goes away when downloaded, but thats where most of these are viewed from
-                      # there's still 32^3 (32768) possible colors with this crushing, so a constant palette isnt viable
-                      # code directly taken from lilliput, fast and accurate, and only decimated to feed to palettegen
-                      # https://github.com/discord/lilliput/blob/e1547514bd5f32800c612e5564b18a60f046b1af/giflib.cpp#L848
-                      "geq=r='bitor(bitand(r(X,Y), 248), 4)':g='bitor(bitand(g(X,Y), 248), 4)':b='bitor(bitand(b(X,Y), 248), 4)',"
-                      # make and use nice palette
-                      # from what i can tell, discord does preserve multi frame palettes
-                      "palettegen=reserve_transparent=1:stats_mode=single"
-                      "[p];"
-                      # for some god forsaken reason, discord destroys any dither that isn't bayer
-                      "[s1][p]paletteuse=dither=bayer:bayer_scale=3:new=1",
-                      # i fucking hate gifs so much man
-                      "-fps_mode", "vfr",
-                      outname)
-    # outname.glc = lc
+    
+    fps_filter = f"{'fps=fps=50,' if fps > 50 else ''}"
+    
+    await run_command("ffmpeg", *COMMON_FLAGS,
+                     "-i", video,
+                     "-gifflags", "-transdiff",
+                     "-loop", str(lc),
+                     "-vf",
+                     f"{fps_filter}split[s0][s1];"
+                     "[s0]geq=r='bitor(bitand(r(X,Y),248),4)':g='bitor(bitand(g(X,Y),248),4)':b='bitor(bitand(b(X,Y),248),4)',"
+                     "palettegen=reserve_transparent=1:stats_mode=single[p];"
+                     "[s1][p]paletteuse=dither=bayer:bayer_scale=3:new=1",
+                     "-fps_mode", "vfr",
+                     outname)
     return outname
 
-
-async def video_reencode(
-        video):  # reencodes mp4 as libx264 since the png format used cant be played by like literally anything
+async def video_reencode(video):
     assert (mt := await video.mediatype()) in [VIDEO, GIF], f"file {video} with type {mt} passed to reencode()"
-    # only reencode if need to ;)
+    
     vcodec, acodec = await va_codecs(video)
-    vcode = ["copy"] if vcodec == "h264" else ["libx264", "-pix_fmt", "yuv420p", "-vf",
-                                               "scale=ceil(iw/2)*2:ceil(ih/2)*2,"
-                                               # turns transparency into blackness
-                                               "premultiply=inplace=1"]
-    acode = ["copy"] if acodec == "aac" else ["aac", "-q:a", "2"]
+    vcode = ["copy"] if vcodec == "h264" else [*H264_FLAGS, "-vf", 
+                                              "scale=ceil(iw/2)*2:ceil(ih/2)*2,premultiply=inplace=1"]
+    acode = ["copy"] if acodec == "aac" else AUDIO_FLAGS
+    
     outname = reserve_tempfile("mp4")
-    await run_command("ffmpeg", "-hide_banner", "-i", video, "-c:v", *vcode, "-c:a", *acode,
-                      "-max_muxing_queue_size", "9999", "-movflags", "+faststart", outname)
-
+    await run_command("ffmpeg", *COMMON_FLAGS,
+                     "-i", video,
+                     "-c:v", *vcode,
+                     "-c:a", *acode,
+                     *VIDEO_FLAGS,
+                     outname)
     return outname
-
 
 async def audio_reencode(audio):
     acodec = await get_acodec(audio)

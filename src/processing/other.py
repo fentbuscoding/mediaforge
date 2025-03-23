@@ -12,13 +12,13 @@ from utils.tempfiles import reserve_tempfile
 
 
 class MyLogger(object):
-    def debug(self, msg: ""):
+    def debug(self, msg: str):
         logger.debug(msg.replace("\r", ""))
 
-    def warning(self, msg: ""):
+    def warning(self, msg: str):
         logger.warning(msg.replace("\r", ""))
 
-    def error(self, msg: ""):
+    def error(self, msg: str):
         logger.error(msg.replace("\r", ""))
 
 

@@ -1,12 +1,13 @@
 import json
 import sys
-
+from functools import lru_cache
 import apng
 
 from processing.run_command import run_command
 from utils.tempfiles import reserve_tempfile
 
-if sys.platform == "win32":  # this hopefully wont cause any problems :>
+# Cache magic import based on platform
+if sys.platform == "win32":
     from winmagic import magic
 else:
     import magic
@@ -14,69 +15,58 @@ else:
 from processing.common import *
 from core.clogs import logger
 
+# Common ffprobe flags
+COMMON_PROBE_FLAGS = ["-v", "panic"]
+JSON_FORMAT_FLAGS = ["-print_format", "json"]
 
+@lru_cache(maxsize=128)
 async def is_apng(filename):
-    out = await run_command("ffprobe", filename, "-v", "panic", "-select_streams", "v:0", "-print_format", "json",
-                            "-show_entries", "stream=codec_name")
+    out = await run_command("ffprobe", filename, *COMMON_PROBE_FLAGS, 
+                          "-select_streams", "v:0", *JSON_FORMAT_FLAGS,
+                          "-show_entries", "stream=codec_name")
     data = json.loads(out)
-    if len(data["streams"]):  # 0 if audio file because it selects v:0, audio cannot be apng
-        return data["streams"][0]["codec_name"] == "apng"
-    else:
-        return False
+    return bool(data["streams"]) and data["streams"][0]["codec_name"] == "apng"
 
-
-# https://askubuntu.com/questions/110264/how-to-find-frames-per-second-of-any-video-file
+@lru_cache(maxsize=128) 
 async def get_frame_rate(filename):
-    """
-    gets the FPS of a file
-    :param filename: filename
-    :return: FPS
-    """
+    """Gets the FPS of a file"""
     logger.info("Getting FPS...")
-    out = await run_command("ffprobe", filename, "-v", "panic", "-select_streams", "v:0", "-print_format", "json",
-                            "-show_entries", "stream=r_frame_rate,codec_name")
+    out = await run_command("ffprobe", filename, *COMMON_PROBE_FLAGS, 
+                          "-select_streams", "v:0", *JSON_FORMAT_FLAGS,
+                          "-show_entries", "stream=r_frame_rate,codec_name")
     data = json.loads(out)
-    if data["streams"][0]["codec_name"] == "apng":  # ffmpeg no likey apng
-        parsedapng = apng.APNG.open(filename)
-        apnglen = 0
-        # https://wiki.mozilla.org/APNG_Specification#.60fcTL.60:_The_Frame_Control_Chunk
-        for png, control in parsedapng.frames:
-            if control.delay_den == 0:
-                control.delay_den = 100
-            apnglen += control.delay / control.delay_den
-        return len(parsedapng.frames) / apnglen
-    else:
-        rate = data["streams"][0]["r_frame_rate"].split("/")
-        if len(rate) == 1:
-            return float(rate[0])
-        if len(rate) == 2:
-            return float(rate[0]) / float(rate[1])
-        return -1
+    
+    if data["streams"][0]["codec_name"] == "apng":
+        return _get_apng_framerate(filename)
+    
+    rate = data["streams"][0]["r_frame_rate"].split("/")
+    return float(rate[0]) / float(rate[1]) if len(rate) == 2 else float(rate[0])
 
+def _get_apng_framerate(filename):
+    """Helper function to calculate APNG framerate"""
+    parsedapng = apng.APNG.open(filename)
+    total_delay = sum(control.delay / (control.delay_den or 100) 
+                     for _, control in parsedapng.frames)
+    return len(parsedapng.frames) / total_delay
 
-# https://superuser.com/questions/650291/how-to-get-video-duration-in-seconds
+@lru_cache(maxsize=128)
 async def get_duration(filename):
-    """
-    gets the duration of a file
-    :param filename: filename
-    :return: duration
-    """
+    """Gets the duration of a file"""
     logger.info("Getting duration...")
-    out = await run_command("ffprobe", "-v", "panic", "-show_entries", "format=duration", "-of",
-                            "default=noprint_wrappers=1:nokey=1", filename)
-    if out == "N/A":  # happens with APNGs
-        # no garuntee that its an APNG here but i dont have any other plans so i want it to raise an exception
-        parsedapng = apng.APNG.open(filename)
-        apnglen = 0
-        # https://wiki.mozilla.org/APNG_Specification#.60fcTL.60:_The_Frame_Control_Chunk
-        for png, control in parsedapng.frames:
-            if control.delay_den == 0:
-                control.delay_den = 100
-            apnglen += control.delay / control.delay_den
-        return apnglen
-    else:
-        return float(out)
+    out = await run_command("ffprobe", *COMMON_PROBE_FLAGS,
+                          "-show_entries", "format=duration", 
+                          "-of", "default=noprint_wrappers=1:nokey=1", 
+                          filename)
+    
+    if out == "N/A":
+        return _get_apng_duration(filename)
+    return float(out)
 
+def _get_apng_duration(filename):
+    """Helper function to calculate APNG duration"""
+    parsedapng = apng.APNG.open(filename)
+    return sum(control.delay / (control.delay_den or 100)
+              for _, control in parsedapng.frames)
 
 async def get_resolution(filename):
     """
